@@ -103,17 +103,17 @@ LPWSTR RunCommand(LPCWSTR lpszMessage)
 				GlobalFree(lpszMessageA);
 				HttpSendRequestW(hRequest, szHeaders, lstrlenW(szHeaders), (LPVOID)(body_json.c_str()), (DWORD)body_json.length());
 				lpszByte = (LPBYTE)GlobalAlloc(GMEM_FIXED, 1);
-				DWORD dwRead;
-				BYTE szBuf[1024 * 4];
-				LPBYTE lpTmp;
-				for (;;)
-				{
-					if (!InternetReadFile(hRequest, szBuf, (DWORD)sizeof(szBuf), &dwRead) || !dwRead) break;
-					lpTmp = (LPBYTE)GlobalReAlloc(lpszByte, (SIZE_T)(dwSize + dwRead), GMEM_MOVEABLE);
-					if (lpTmp == NULL) break;
-					lpszByte = lpTmp;
-					CopyMemory(lpszByte + dwSize, szBuf, dwRead);
-					dwSize += dwRead;
+				if (lpszByte) {
+					DWORD dwRead;
+					BYTE szBuf[1024 * 4];
+					for (;;) {
+						if (!InternetReadFile(hRequest, szBuf, (DWORD)sizeof(szBuf), &dwRead) || !dwRead) break;
+						LPBYTE lpTmp = (LPBYTE)GlobalReAlloc(lpszByte, (SIZE_T)(dwSize + dwRead), GMEM_MOVEABLE);
+						if (lpTmp == NULL) break;
+						lpszByte = lpTmp;
+						CopyMemory(lpszByte + dwSize, szBuf, dwRead);
+						dwSize += dwRead;
+					}
 				}
 				InternetCloseHandle(hRequest);
 			}
@@ -132,7 +132,12 @@ LPWSTR RunCommand(LPCWSTR lpszMessage)
 			return a2w(item["text"].string_value().c_str());
 		}
 	}
-	return 0;
+	LPCWSTR lpszErrorMessage = L"エラーとなりました。しばらくたってからリトライしてください。";
+	LPWSTR lpszReturn = (LPWSTR)GlobalAlloc(0, sizeof(WCHAR) * (lstrlenW(lpszErrorMessage) + 1));
+	if (lpszReturn) {
+		lstrcpy(lpszReturn, lpszErrorMessage);
+	}
+	return lpszReturn;
 }
 
 LPWSTR HtmlEncode(LPCWSTR lpText)
@@ -157,24 +162,24 @@ LPWSTR HtmlEncode(LPCWSTR lpText)
 	}
 	if (n == m)return 0;
 	LPWSTR lpOutText = (LPWSTR)GlobalAlloc(0, sizeof(WCHAR) * (m + 1));
-	for (i = 0, ptr = lpOutText; i <= n; i++)
-	{
-		switch (lpText[i])
-		{
-		case L'>':
-			lstrcpyW(ptr, L"&gt;");
-			ptr += lstrlenW(ptr);
-			break;
-		case L'<':
-			lstrcpyW(ptr, L"&lt;");
-			ptr += lstrlenW(ptr);
-			break;
-		case L'&':
-			lstrcpyW(ptr, L"&amp;");
-			ptr += lstrlenW(ptr);
-			break;
-		default:
-			*ptr++ = lpText[i];
+	if (lpOutText) {
+		for (i = 0, ptr = lpOutText; i <= n; i++) {
+			switch (lpText[i]) {
+			case L'>':
+				lstrcpyW(ptr, L"&gt;");
+				ptr += lstrlenW(ptr);
+				break;
+			case L'<':
+				lstrcpyW(ptr, L"&lt;");
+				ptr += lstrlenW(ptr);
+				break;
+			case L'&':
+				lstrcpyW(ptr, L"&amp;");
+				ptr += lstrlenW(ptr);
+				break;
+			default:
+				*ptr++ = lpText[i];
+			}
 		}
 	}
 	return lpOutText;
@@ -289,22 +294,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				}
 				const int nHtmlLength = lstrlenW(lpszReturnString) + 256;
 				LPWSTR lpszHtml = (LPWSTR)GlobalAlloc(0, nHtmlLength * sizeof(WCHAR));
-				lstrcpyW(lpszHtml, L"<div class=\"result\"><div class=\"icon\"><img></div><div class=\"output\"><pre>");
-				lstrcatW(lpszHtml, lpszReturnString);
-				GlobalFree((HGLOBAL)lpszReturnString);
-				lstrcatW(lpszHtml, L"</pre></div></div>");
-				CComQIPtr<IHTMLElement>pElementBody;
-				pDocument->get_body((IHTMLElement**)&pElementBody);
-				if (pElementBody) {
-					BSTR where = SysAllocString(L"beforeEnd");
-					BSTR html = SysAllocString(lpszHtml);
-					pElementBody->insertAdjacentHTML(where, html);
-					SysFreeString(where);
-					SysFreeString(html);
-					pElementBody.Release();
-					ScrollBottom(pDocument);
+				if (lpszHtml) {
+					lstrcpyW(lpszHtml, L"<div class=\"result\"><div class=\"icon\"><img></div><div class=\"output\"><pre>");
+					lstrcatW(lpszHtml, lpszReturnString);
+					GlobalFree((HGLOBAL)lpszReturnString);
+					lstrcatW(lpszHtml, L"</pre></div></div>");
+					CComQIPtr<IHTMLElement>pElementBody;
+					pDocument->get_body((IHTMLElement**)&pElementBody);
+					if (pElementBody) {
+						BSTR where = SysAllocString(L"beforeEnd");
+						BSTR html = SysAllocString(lpszHtml);
+						pElementBody->insertAdjacentHTML(where, html);
+						SysFreeString(where);
+						SysFreeString(html);
+						pElementBody.Release();
+						ScrollBottom(pDocument);
+					}
+					GlobalFree(lpszHtml);
 				}
-				GlobalFree(lpszHtml);
 			}
 		}
 		EnableWindow(hBrowser, TRUE);
