@@ -91,15 +91,15 @@ LPWSTR RunCommand(LPCWSTR lpszMessage)
 		const HINTERNET hConnection = InternetConnectW(hSession, L"api.openai.com", INTERNET_DEFAULT_HTTPS_PORT, 0, 0, INTERNET_SERVICE_HTTP, 0, 0);
 		if (hConnection)
 		{
-			const HINTERNET hRequest = HttpOpenRequestW(hConnection, L"POST", L"/v1/completions", 0, 0, 0, INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_SECURE, 0);
+			const HINTERNET hRequest = HttpOpenRequestW(hConnection, L"POST", L"/v1/chat/completions", 0, 0, 0, INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_SECURE, 0);
 			if (hRequest)
 			{
 				WCHAR szHeaders[1024] = L"";
 				wsprintf(szHeaders, L"Content-Type: application/json\r\nAuthorization: Bearer %s", szAPIKey);
-				std::string body_json = "{\"model\":\"text-davinci-003\", \"prompt\":\"";
+				std::string body_json = "{\"model\":\"gpt-3.5-turbo\", \"messages\":[{\"role\":\"user\", \"content\":\"";
 				LPSTR lpszMessageA = w2a(lpszMessage);
 				body_json += lpszMessageA;
-				body_json += "\", \"temperature\": 0, \"max_tokens\": 1000}";
+				body_json += "\"}]}";
 				GlobalFree(lpszMessageA);
 				HttpSendRequestW(hRequest, szHeaders, lstrlenW(szHeaders), (LPVOID)(body_json.c_str()), (DWORD)body_json.length());
 				lpszByte = (LPBYTE)GlobalAlloc(GMEM_FIXED, 1);
@@ -129,7 +129,7 @@ LPWSTR RunCommand(LPCWSTR lpszMessage)
 		std::string err;
 		json11::Json v = json11::Json::parse(src, err);
 		for (auto& item : v["choices"].array_items()) {
-			return a2w(item["text"].string_value().c_str());
+			return a2w(item["message"]["content"].string_value().c_str());
 		}
 	}
 	LPCWSTR lpszErrorMessage = L"エラーとなりました。しばらくたってからリトライしてください。";
