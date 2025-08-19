@@ -1,467 +1,503 @@
-﻿#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
-
-#pragma comment(lib, "wininet")
+﻿#pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #include <windows.h>
-#include <atlbase.h>
-#include <atlhost.h>
+#include <windowsx.h>
+#include <commctrl.h>  // DefSubclassProc 用
+#include <winhttp.h>
+#include <vector>
 #include <string>
-#include <winternl.h>
-#include <wininet.h>
-#include <iostream>
-#include "json11.hpp"
-#include "resource.h"
+#include "json11.hpp"  // json11 の使用を前提
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "comctl32.lib")  // 必須
 
-#define DEFAULT_DPI 96
-#define SCALEX(X) MulDiv(X, uDpiX, DEFAULT_DPI)
-#define SCALEY(Y) MulDiv(Y, uDpiY, DEFAULT_DPI)
-#define POINT2PIXEL(PT) MulDiv(PT, uDpiY, 72)
-
-TCHAR szClassName[] = TEXT("aichat");
 WCHAR szAPIKey[] = L"YOUR_API_KEY";
+
+struct ChatMessage {
+    std::wstring text;
+    bool isMine;
+    RECT rect;
+};
+
+struct ThreadData {
+    HWND hWnd;
+    LPWSTR lpszMessage;
+};
+
+std::vector<ChatMessage> g_messages;
+int g_scrollPos = 0;      // 縦スクロール位置（ピクセル）
+int g_contentHeight = 0;  // 全メッセージの合計高さ
+int g_lineHeight = 20;    // 最低行送り
 
 LPWSTR a2w(LPCSTR lpszText)
 {
-	const DWORD dwSize = MultiByteToWideChar(CP_UTF8, 0, lpszText, -1, 0, 0);
-	LPWSTR lpszReturnText = (LPWSTR)GlobalAlloc(0, dwSize * sizeof(WCHAR));
-	MultiByteToWideChar(CP_UTF8, 0, lpszText, -1, lpszReturnText, dwSize);
-	return lpszReturnText;
+    const DWORD dwSize = MultiByteToWideChar(CP_UTF8, 0, lpszText, -1, 0, 0);
+    LPWSTR lpszReturnText = (LPWSTR)GlobalAlloc(0, dwSize * sizeof(WCHAR));
+    MultiByteToWideChar(CP_UTF8, 0, lpszText, -1, lpszReturnText, dwSize);
+    return lpszReturnText;
 }
 
 LPSTR w2a(LPCWSTR lpszText)
 {
-	const DWORD dwSize = WideCharToMultiByte(CP_UTF8, 0, lpszText, -1, 0, 0, 0, 0);
-	LPSTR lpszReturnText = (char*)GlobalAlloc(GPTR, dwSize * sizeof(char));
-	WideCharToMultiByte(CP_UTF8, 0, lpszText, -1, lpszReturnText, dwSize, 0, 0);
-	return lpszReturnText;
-}
-
-BOOL GetScaling(HWND hWnd, UINT* pnX, UINT* pnY)
-{
-	BOOL bSetScaling = FALSE;
-	const HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-	if (hMonitor)
-	{
-		HMODULE hShcore = LoadLibraryW(L"SHCORE");
-		if (hShcore)
-		{
-			typedef HRESULT __stdcall GetDpiForMonitor(HMONITOR, int, UINT*, UINT*);
-			GetDpiForMonitor* fnGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor*>(GetProcAddress(hShcore, "GetDpiForMonitor"));
-			if (fnGetDpiForMonitor)
-			{
-				UINT uDpiX, uDpiY;
-				if (SUCCEEDED(fnGetDpiForMonitor(hMonitor, 0, &uDpiX, &uDpiY)) && uDpiX > 0 && uDpiY > 0)
-				{
-					*pnX = uDpiX;
-					*pnY = uDpiY;
-					bSetScaling = TRUE;
-				}
-			}
-			FreeLibrary(hShcore);
-		}
-	}
-	if (!bSetScaling)
-	{
-		HDC hdc = GetDC(NULL);
-		if (hdc)
-		{
-			*pnX = GetDeviceCaps(hdc, LOGPIXELSX);
-			*pnY = GetDeviceCaps(hdc, LOGPIXELSY);
-			ReleaseDC(NULL, hdc);
-			bSetScaling = TRUE;
-		}
-	}
-	if (!bSetScaling)
-	{
-		*pnX = DEFAULT_DPI;
-		*pnY = DEFAULT_DPI;
-		bSetScaling = TRUE;
-	}
-	return bSetScaling;
+    const DWORD dwSize = WideCharToMultiByte(CP_UTF8, 0, lpszText, -1, 0, 0, 0, 0);
+    LPSTR lpszReturnText = (char*)GlobalAlloc(GPTR, dwSize * sizeof(char));
+    WideCharToMultiByte(CP_UTF8, 0, lpszText, -1, lpszReturnText, dwSize, 0, 0);
+    return lpszReturnText;
 }
 
 LPWSTR RunCommand(LPCWSTR lpszMessage)
 {
-	if (!lpszMessage) return 0;
-	LPBYTE lpszByte = 0;
-	DWORD dwSize = 0;
-	const HINTERNET hSession = InternetOpenW(0, INTERNET_OPEN_TYPE_PRECONFIG, 0, 0, INTERNET_FLAG_NO_COOKIES);
-	if (hSession)
-	{
-		const HINTERNET hConnection = InternetConnectW(hSession, L"api.openai.com", INTERNET_DEFAULT_HTTPS_PORT, 0, 0, INTERNET_SERVICE_HTTP, 0, 0);
-		if (hConnection)
-		{
-			const HINTERNET hRequest = HttpOpenRequestW(hConnection, L"POST", L"/v1/chat/completions", 0, 0, 0, INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_SECURE, 0);
-			if (hRequest)
-			{
-				WCHAR szHeaders[1024] = L"";
-				wsprintf(szHeaders, L"Content-Type: application/json\r\nAuthorization: Bearer %s", szAPIKey);
-				std::string body_json = "{\"model\":\"gpt-3.5-turbo\", \"messages\":[{\"role\":\"user\", \"content\":\"";
-				LPSTR lpszMessageA = w2a(lpszMessage);
-				body_json += lpszMessageA;
-				body_json += "\"}]}";
-				GlobalFree(lpszMessageA);
-				HttpSendRequestW(hRequest, szHeaders, lstrlenW(szHeaders), (LPVOID)(body_json.c_str()), (DWORD)body_json.length());
-				lpszByte = (LPBYTE)GlobalAlloc(GMEM_FIXED, 1);
-				if (lpszByte) {
-					DWORD dwRead;
-					BYTE szBuf[1024 * 4];
-					for (;;) {
-						if (!InternetReadFile(hRequest, szBuf, (DWORD)sizeof(szBuf), &dwRead) || !dwRead) break;
-						LPBYTE lpTmp = (LPBYTE)GlobalReAlloc(lpszByte, (SIZE_T)(dwSize + dwRead), GMEM_MOVEABLE);
-						if (lpTmp == NULL) break;
-						lpszByte = lpTmp;
-						CopyMemory(lpszByte + dwSize, szBuf, dwRead);
-						dwSize += dwRead;
-					}
-				}
-				InternetCloseHandle(hRequest);
-			}
-			InternetCloseHandle(hConnection);
-		}
-		InternetCloseHandle(hSession);
-	}
-	if (lpszByte)
-	{
-		std::string src((LPSTR)lpszByte, dwSize);
-		GlobalFree(lpszByte);
-		lpszByte = 0;
-		std::string err;
-		json11::Json v = json11::Json::parse(src, err);
-		for (auto& item : v["choices"].array_items()) {
-			return a2w(item["message"]["content"].string_value().c_str());
-		}
-	}
-	LPCWSTR lpszErrorMessage = L"エラーとなりました。しばらくたってからリトライしてください。";
-	LPWSTR lpszReturn = (LPWSTR)GlobalAlloc(0, sizeof(WCHAR) * (lstrlenW(lpszErrorMessage) + 1));
-	if (lpszReturn) {
-		lstrcpy(lpszReturn, lpszErrorMessage);
-	}
-	return lpszReturn;
-}
+    if (!lpszMessage) return 0;
 
-LPWSTR HtmlEncode(LPCWSTR lpText)
-{
-	int i, m;
-	LPWSTR ptr;
-	const int n = lstrlenW(lpText);
-	for (i = 0, m = 0; i < n; i++)
-	{
-		switch (lpText[i])
-		{
-		case L'>':
-		case L'<':
-			m += 4;
-			break;
-		case L'&':
-			m += 5;
-			break;
-		default:
-			m++;
-		}
-	}
-	if (n == m)return 0;
-	LPWSTR lpOutText = (LPWSTR)GlobalAlloc(0, sizeof(WCHAR) * (m + 1));
-	if (lpOutText) {
-		for (i = 0, ptr = lpOutText; i <= n; i++) {
-			switch (lpText[i]) {
-			case L'>':
-				lstrcpyW(ptr, L"&gt;");
-				ptr += lstrlenW(ptr);
-				break;
-			case L'<':
-				lstrcpyW(ptr, L"&lt;");
-				ptr += lstrlenW(ptr);
-				break;
-			case L'&':
-				lstrcpyW(ptr, L"&amp;");
-				ptr += lstrlenW(ptr);
-				break;
-			default:
-				*ptr++ = lpText[i];
-			}
-		}
-	}
-	return lpOutText;
+    std::string response;
+    DWORD dwSize = 0;
+
+    // WinHTTP セッションを作成
+    HINTERNET hSession = WinHttpOpen(L"WinHTTP ChatClient/1.0",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return 0;
+
+    // 接続
+    HINTERNET hConnect = WinHttpConnect(hSession, L"api.openai.com",
+        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConnect) {
+        WinHttpCloseHandle(hSession);
+        return 0;
+    }
+
+    // POST リクエスト
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
+        L"/v1/chat/completions",
+        nullptr, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE);
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return 0;
+    }
+
+    // ヘッダー作成
+    WCHAR szHeaders[1024];
+    wsprintf(szHeaders, L"Content-Type: application/json\r\nAuthorization: Bearer %s", szAPIKey);
+
+    // JSON ボディ作成
+    std::string body_json = "{\"model\":\"gpt-3.5-turbo\", \"messages\":[{\"role\":\"user\", \"content\":\"";
+    LPSTR lpszMessageA = w2a(lpszMessage);
+    body_json += lpszMessageA;
+    body_json += "\"}]}";
+    GlobalFree(lpszMessageA);
+
+    // 送信
+    BOOL bResult = WinHttpSendRequest(hRequest, szHeaders, (DWORD)wcslen(szHeaders),
+        (LPVOID)body_json.c_str(), (DWORD)body_json.length(),
+        (DWORD)body_json.length(), 0);
+    if (!bResult) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        goto error_return;
+    }
+
+    // レスポンス受信
+    if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        goto error_return;
+    }
+
+    for (;;) {
+        DWORD dwAvailable = 0;
+        if (!WinHttpQueryDataAvailable(hRequest, &dwAvailable) || dwAvailable == 0) break;
+        std::unique_ptr<char[]> buffer(new char[dwAvailable]);
+        DWORD dwRead = 0;
+        if (!WinHttpReadData(hRequest, buffer.get(), dwAvailable, &dwRead) || dwRead == 0) break;
+        response.append(buffer.get(), dwRead);
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+
+    {
+        std::string err;
+        json11::Json json = json11::Json::parse(response, err);
+        if (!err.empty()) {
+            LPWSTR result = (LPWSTR)GlobalAlloc(GMEM_FIXED, 64 * sizeof(wchar_t));
+            wcscpy_s(result, 64, L"JSON解析エラー");
+            return result;
+        }
+
+        auto choices = json["choices"].array_items();
+        if (!choices.empty()) {
+            std::wstring content = a2w(choices[0]["message"]["content"].string_value().c_str());
+            LPWSTR result = (LPWSTR)GlobalAlloc(GMEM_FIXED, (content.size() + 1) * sizeof(wchar_t));
+            wcscpy_s(result, content.size() + 1, content.c_str());
+            return result;
+        }
+    }
+
+error_return:
+    LPCWSTR lpszErrorMessage = L"エラーとなりました。しばらくたってからリトライしてください。";
+    LPWSTR lpszReturn = (LPWSTR)GlobalAlloc(GMEM_FIXED, sizeof(WCHAR) * (lstrlenW(lpszErrorMessage) + 1));
+    if (lpszReturn) {
+        lstrcpy(lpszReturn, lpszErrorMessage);
+    }
+    return lpszReturn;
 }
 
 DWORD WINAPI ThreadFunc(LPVOID p)
 {
-	HWND hWnd = (HWND)p;
-	LPCWSTR lpszMessage = (LPCWSTR)GetWindowLongPtr(hWnd, DWLP_USER);
-	PostMessageW(hWnd, WM_APP, 0, (LPARAM)RunCommand(lpszMessage));
-	ExitThread(0);
+    ThreadData* data = (ThreadData*)p;
+    PostMessageW(data->hWnd, WM_APP, 0, (LPARAM)RunCommand(data->lpszMessage));
+    ExitThread(0);
 }
 
-VOID execBrowserCommand(IHTMLDocument2* pDocument, LPCWSTR lpszMessage)
-{
-	VARIANT var = { 0 };
-	VARIANT_BOOL varBool = { 0 };
-	var.vt = VT_EMPTY;
-	BSTR command = SysAllocString(lpszMessage);
-	pDocument->execCommand(command, VARIANT_FALSE, var, &varBool);
-	SysFreeString(command);
+// フォントに基づいて行の高さを更新
+void UpdateLineHeight(HWND hWnd) {
+    HDC hdc = GetDC(hWnd);
+    HFONT hFont = (HFONT)SendMessage(hWnd, WM_GETFONT, 0, 0);
+    HFONT hOld = nullptr;
+    if (hFont) hOld = (HFONT)SelectObject(hdc, hFont);
+
+    TEXTMETRIC tm;
+    GetTextMetrics(hdc, &tm);
+    g_lineHeight = tm.tmHeight + tm.tmExternalLeading + 10;
+
+    if (hOld) SelectObject(hdc, hOld);
+    ReleaseDC(hWnd, hdc);
 }
 
-VOID ScrollBottom(IHTMLDocument2* pDocument)
-{
-	IHTMLWindow2* pHtmlWindow2;
-	pDocument->get_parentWindow(&pHtmlWindow2);
-	if (pHtmlWindow2) {
-		pHtmlWindow2->scrollTo(0, SHRT_MAX);
-		pHtmlWindow2->Release();
-	}
+void UpdateScrollBar(HWND hWnd) {
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+
+    const int inputHeight = 32;    // 入力欄の高さ
+    const int bottomMargin = 64;   // 入力欄の上の余白
+    int visibleHeight = rcClient.bottom - inputHeight - bottomMargin;
+
+    HDC hdc = GetDC(hWnd);
+    HFONT hFont = (HFONT)SendMessage(hWnd, WM_GETFONT, 0, 0);
+    HFONT hOld = nullptr;
+    if (hFont) hOld = (HFONT)SelectObject(hdc, hFont);
+
+    const int bubblePaddingX = 15;
+    const int bubblePaddingY = 10;
+
+    g_contentHeight = 5;
+    for (auto& msg : g_messages) {
+        RECT rcCalc = { 0,0, rcClient.right / 2,0 };
+        DrawTextW(hdc, msg.text.c_str(), -1, &rcCalc,
+            DT_CALCRECT | DT_WORDBREAK | DT_LEFT | DT_NOPREFIX);
+
+        int bubbleHeight = (rcCalc.bottom - rcCalc.top) + bubblePaddingY * 2;
+        int lineHeight = max(bubbleHeight + 10, g_lineHeight);
+        g_contentHeight += lineHeight;
+    }
+
+    if (hOld) SelectObject(hdc, hOld);
+    ReleaseDC(hWnd, hdc);
+
+    SCROLLINFO si = { sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS };
+    si.nMin = 0;
+    si.nMax = max(g_contentHeight - 1, 0);
+    si.nPage = visibleHeight;
+    if (g_scrollPos > si.nMax - si.nPage + 1)
+        g_scrollPos = max(0, si.nMax - si.nPage + 1);
+    si.nPos = g_scrollPos;
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
 }
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-	static CComQIPtr<IWebBrowser2>pWB2;
-	static CComQIPtr<IHTMLDocument2>pDocument;
-	static HWND hEdit, hBrowser;
-	static HBRUSH hBrush;
-	static HFONT hFont;
-	static UINT uDpiX = DEFAULT_DPI, uDpiY = DEFAULT_DPI;
-	static HANDLE hThread;
-	static LPWSTR lpszMessage;
-	switch (msg)
-	{
-	case WM_CREATE:
-		hBrush = CreateSolidBrush(RGB(200, 219, 249));
-		hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", 0, WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL, 0, 0, 0, 0, hWnd, 0, ((LPCREATESTRUCT)lParam)->hInstance, 0);
-		SendMessageW(hEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"メッセージを入力");
-		hBrowser = CreateWindowExW(0, L"AtlAxWin140", L"about:blank", WS_CHILD | WS_VISIBLE | WS_VSCROLL, 0, 0, 0, 0, hWnd, 0, ((LPCREATESTRUCT)lParam)->hInstance, 0);
-		{
-			CComPtr<IUnknown> punkIE;
-			if (AtlAxGetControl(hBrowser, &punkIE) == S_OK) {
-				pWB2 = punkIE;
-				punkIE.Release();
-				if (pWB2) {
-					pWB2->put_Silent(VARIANT_TRUE);
-					pWB2->put_RegisterAsDropTarget(VARIANT_FALSE);
-					pWB2->get_Document((IDispatch**)&pDocument);
-					{
-						CComPtr<IUnknown> punkIE;
-						ATL::CComPtr<IAxWinAmbientDispatch> ambient;
-						AtlAxGetHost(hBrowser, &punkIE);
-						ambient = punkIE;
-						if (ambient) {
-							ambient->put_AllowContextMenu(VARIANT_FALSE);
-						}
-					}
-				}
-			}
-		}
-		if (!pDocument) {
-			return -1;
-		}
-		{
-			WCHAR szModuleFilePath[MAX_PATH] = { 0 };
-			GetModuleFileNameW(NULL, szModuleFilePath, MAX_PATH);
-			WCHAR szURL[MAX_PATH] = { 0 };
-			wsprintfW(szURL, L"res://%s/%d", szModuleFilePath, IDR_HTML1);
-			BSTR url = SysAllocString(szURL);
-			pWB2->Navigate(url, NULL, NULL, NULL, NULL);
-			SysFreeString(url);
-		}
-		SendMessage(hWnd, WM_APP + 1, 0, 0);
-		RECT rect;
-		GetWindowRect(hWnd, &rect);
-		SetWindowPos(hWnd, NULL, 0, 0, (rect.right - rect.left) / 3, (rect.bottom - rect.top) / 2, SWP_NOMOVE | SWP_NOZORDER | SWP_NOSENDCHANGING | SWP_NOREDRAW);
-		break;
-	case WM_SIZE:
-		MoveWindow(hBrowser, 0, 0, LOWORD(lParam), HIWORD(lParam) - POINT2PIXEL(32), TRUE);
-		MoveWindow(hEdit, 0, HIWORD(lParam) - POINT2PIXEL(32), LOWORD(lParam), POINT2PIXEL(32), TRUE);
-		break;
-	case WM_CTLCOLOREDIT:
-	case WM_CTLCOLORSTATIC:
-		SetBkMode((HDC)wParam, TRANSPARENT);
-		return(INT_PTR)hBrush;
-	case WM_SETFOCUS:
-		SetFocus(hEdit);
-		break;
-	case WM_APP:
-		WaitForSingleObject(hThread, INFINITE);
-		CloseHandle(hThread);
-		hThread = 0;
-		{
-			LPWSTR lpszReturnString = (LPWSTR)lParam;
-			if (lpszReturnString) {
-				StrTrim(lpszReturnString, L"\n");
-				LPWSTR lpszReturnString2 = HtmlEncode(lpszReturnString);
-				if (lpszReturnString2) {
-					GlobalFree((HGLOBAL)lpszReturnString);
-					lpszReturnString = lpszReturnString2;
-				}
-				const int nHtmlLength = lstrlenW(lpszReturnString) + 256;
-				LPWSTR lpszHtml = (LPWSTR)GlobalAlloc(0, nHtmlLength * sizeof(WCHAR));
-				if (lpszHtml) {
-					lstrcpyW(lpszHtml, L"<div class=\"result\"><div class=\"icon\"><img></div><div class=\"output\"><pre>");
-					lstrcatW(lpszHtml, lpszReturnString);
-					GlobalFree((HGLOBAL)lpszReturnString);
-					lstrcatW(lpszHtml, L"</pre></div></div>");
-					CComQIPtr<IHTMLElement>pElementBody;
-					pDocument->get_body((IHTMLElement**)&pElementBody);
-					if (pElementBody) {
-						BSTR where = SysAllocString(L"beforeEnd");
-						BSTR html = SysAllocString(lpszHtml);
-						pElementBody->insertAdjacentHTML(where, html);
-						SysFreeString(where);
-						SysFreeString(html);
-						pElementBody.Release();
-						ScrollBottom(pDocument);
-					}
-					GlobalFree(lpszHtml);
-				}
-			}
-		}
-		EnableWindow(hBrowser, TRUE);
-		EnableWindow(hEdit, TRUE);
-		SetFocus(hEdit);
-		break;
-	case WM_COMMAND:
-		if (LOWORD(wParam) == ID_RUN)
-		{
-			if (GetFocus() != hEdit)
-				SetFocus(hEdit);
-			const int nTextLength = GetWindowTextLength(hEdit);
-			if (nTextLength > 0) {
-				GlobalFree(lpszMessage);
-				lpszMessage = (LPWSTR)GlobalAlloc(0, (nTextLength + 1) * sizeof(WCHAR));
-				if (lpszMessage) {
-					GetWindowTextW(hEdit, lpszMessage, nTextLength + 1);
-					SetWindowLongPtrW(hWnd, DWLP_USER, (LONG_PTR)lpszMessage);
-					LPWSTR lpszMessage2 = HtmlEncode(lpszMessage);
-					UINT nHtmlLength = (lpszMessage2 ? lstrlenW(lpszMessage2) : nTextLength) + 256;
-					LPWSTR lpszHtml = (LPWSTR)GlobalAlloc(0, nHtmlLength * sizeof(WCHAR));
-					if (lpszHtml) {
-						lstrcpyW(lpszHtml, L"<div class=\"input\"><pre>");
-						lstrcatW(lpszHtml, lpszMessage2 ? lpszMessage2 : lpszMessage);
-						lstrcatW(lpszHtml, L"</pre></div>");
-						CComQIPtr<IHTMLElement>pElementBody;
-						pDocument->get_body((IHTMLElement**)&pElementBody);
-						if (pElementBody) {
-							BSTR where = SysAllocString(L"beforeEnd");
-							BSTR html = SysAllocString(lpszHtml);
-							pElementBody->insertAdjacentHTML(where, html);
-							SysFreeString(where);
-							SysFreeString(html);
-							pElementBody.Release();
-							ScrollBottom(pDocument);
-						}
-						GlobalFree(lpszHtml);
-						SetWindowText(hEdit, 0);
-						DWORD dwParam;
-						EnableWindow(hBrowser, FALSE);
-						EnableWindow(hEdit, FALSE);
-						hThread = CreateThread(0, 0, ThreadFunc, (LPVOID)hWnd, 0, &dwParam);
-					}
-					GlobalFree((HGLOBAL)lpszMessage2);
-				}
-			}
-		}
-		else if (LOWORD(wParam) == ID_COPY) {
-			if (GetFocus() == hEdit) {
-				SendMessage(hEdit, WM_COPY, 0, 0);
-			}
-			else {
-				execBrowserCommand(pDocument, L"Copy");
-				execBrowserCommand(pDocument, L"Unselect");
-				SetFocus(hEdit);
-			}
-		}
-		else if (LOWORD(wParam) == ID_TAB) {
-			execBrowserCommand(pDocument, L"Unselect");
-			SendMessage(hEdit, EM_SETSEL, 0, -1);
-			SetFocus(hEdit);
-		}
-		break;
-	case WM_NCCREATE:
-	{
-		const HMODULE hModUser32 = GetModuleHandleW(L"user32.dll");
-		if (hModUser32)
-		{
-			typedef BOOL(WINAPI* fnTypeEnableNCScaling)(HWND);
-			const fnTypeEnableNCScaling fnEnableNCScaling = (fnTypeEnableNCScaling)GetProcAddress(hModUser32, "EnableNonClientDpiScaling");
-			if (fnEnableNCScaling)
-			{
-				fnEnableNCScaling(hWnd);
-			}
-		}
-	}
-	return DefWindowProc(hWnd, msg, wParam, lParam);
-	case WM_DPICHANGED:
-	case WM_APP + 1:
-		GetScaling(hWnd, &uDpiX, &uDpiY);
-		DeleteObject(hFont);
-		hFont = CreateFontW(-POINT2PIXEL(12), 0, 0, 0, FW_NORMAL, 0, 0, 0, ANSI_CHARSET, 0, 0, 0, 0, L"Consolas");
-		SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, 0);
-		break;
-	case WM_CLOSE:
-		DestroyWindow(hWnd);
-		break;
-	case WM_DESTROY:
-		GlobalFree(lpszMessage);
-		pDocument.Release();
-		pWB2.Release();
-		DeleteObject(hBrush);
-		DeleteObject(hFont);
-		PostQuitMessage(0);
-		break;
-	default:
-		return DefDlgProc(hWnd, msg, wParam, lParam);
-	}
-	return 0;
+void ScrollToBottom(HWND hWnd) {
+    SCROLLINFO si = { sizeof(SCROLLINFO), SIF_ALL };
+    GetScrollInfo(hWnd, SB_VERT, &si);
+
+    // 最大値を取得して一番下に設定
+    si.nPos = si.nMax - (int)si.nPage + 1;
+    if (si.nPos < si.nMin) si.nPos = si.nMin;
+
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+    g_scrollPos = si.nPos;
+
+    InvalidateRect(hWnd, NULL, TRUE);
 }
 
-int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nShowCmd)
+void AddMessage(HWND hWnd, const std::wstring& msg, bool mine) {
+    ChatMessage m{ msg, mine };
+    g_messages.push_back(m);
+    UpdateScrollBar(hWnd);
+    ScrollToBottom(hWnd);
+}
+
+void OnPaint(HWND hWnd, HDC hdc) {
+    RECT rcClient;
+    GetClientRect(hWnd, &rcClient);
+
+    const int inputHeight = 32;
+    const int bottomMargin = 64; // 入力欄上の余白
+    const int bottomLimit = rcClient.bottom - inputHeight - bottomMargin;
+
+    const int bubblePaddingX = 15;
+    const int bubblePaddingY = 10;
+
+    HBRUSH hBrushMine = CreateSolidBrush(RGB(187, 215, 234));
+    HBRUSH hBrushOther = CreateSolidBrush(RGB(244, 244, 244));
+    HPEN hPen = CreatePen(PS_SOLID, 1, RGB(250, 250, 250));
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+
+    int y = 5 - g_scrollPos;
+    for (auto& msg : g_messages) {
+        RECT rcCalc = { 0,0, rcClient.right / 2,0 };
+        DrawTextW(hdc, msg.text.c_str(), -1, &rcCalc,
+            DT_CALCRECT | DT_WORDBREAK | DT_LEFT | DT_NOPREFIX);
+
+        int bubbleWidth = (rcCalc.right - rcCalc.left) + bubblePaddingX * 2;
+        int bubbleHeight = (rcCalc.bottom - rcCalc.top) + bubblePaddingY * 2;
+        int lineHeight = max(bubbleHeight + 10, g_lineHeight);
+
+        if (y + bubbleHeight > bottomLimit)
+            break; // 入力欄の上限まで
+
+        HBRUSH hOldBrush;
+        if (msg.isMine) {
+            msg.rect = { rcClient.right - bubbleWidth - 10, y,
+                         rcClient.right - 10, y + bubbleHeight };
+            hOldBrush = (HBRUSH)SelectObject(hdc, hBrushMine);
+        }
+        else {
+            msg.rect = { 10, y,
+                         10 + bubbleWidth, y + bubbleHeight };
+            hOldBrush = (HBRUSH)SelectObject(hdc, hBrushOther);
+        }
+
+        RoundRect(hdc, msg.rect.left, msg.rect.top,
+            msg.rect.right, msg.rect.bottom, 20, 20);
+
+        RECT rcDraw = msg.rect;
+        InflateRect(&rcDraw, -bubblePaddingX, -bubblePaddingY);
+        SetBkMode(hdc, TRANSPARENT);
+
+        DrawTextW(hdc, msg.text.c_str(), -1, &rcDraw,
+            DT_LEFT | DT_NOPREFIX | DT_WORDBREAK);
+
+        SelectObject(hdc, hOldBrush);
+        y += lineHeight;
+    }
+
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hPen);
+    DeleteObject(hBrushMine);
+    DeleteObject(hBrushOther);
+}
+
+void OnVScroll(HWND hWnd, WPARAM wParam) {
+    SCROLLINFO si = { sizeof(SCROLLINFO), SIF_ALL };
+    GetScrollInfo(hWnd, SB_VERT, &si);
+    int pos = si.nPos;
+
+    switch (LOWORD(wParam)) {
+    case SB_LINEUP:   si.nPos -= 20; break;
+    case SB_LINEDOWN: si.nPos += 20; break;
+    case SB_PAGEUP:   si.nPos -= (int)si.nPage; break;
+    case SB_PAGEDOWN: si.nPos += (int)si.nPage; break;
+    case SB_THUMBTRACK: si.nPos = si.nTrackPos; break;
+    }
+
+    if (si.nPos < si.nMin) si.nPos = si.nMin;
+    if (si.nPos > si.nMax - (int)si.nPage + 1) si.nPos = si.nMax - (int)si.nPage + 1;
+
+    si.fMask = SIF_POS;
+    SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+    g_scrollPos = si.nPos;
+    InvalidateRect(hWnd, NULL, TRUE);
+}
+
+void CopyToClipboard(HWND hWnd, const std::wstring& text) {
+    if (OpenClipboard(hWnd)) {
+        EmptyClipboard();
+        size_t size = (text.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (hMem) {
+            memcpy(GlobalLock(hMem), text.c_str(), size);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+        CloseClipboard();
+    }
+}
+
+LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
-	if (FAILED(CoInitialize(NULL)))
-	{
-		return 0;
-	}
-	::AtlAxWinInit();
-	MSG msg = { 0 };
-	{
-		CComModule _Module;
-		WNDCLASS wndclass = {
-			0,
-			WndProc,
-			0,
-			DLGWINDOWEXTRA,
-			hInstance,
-			LoadIcon(hInstance,(LPCTSTR)IDI_ICON1),
-			0,
-			0,
-			0,
-			szClassName
-		};
-		RegisterClass(&wndclass);
-		HWND hWnd = CreateWindow(
-			szClassName,
-			TEXT("AI chat"),
-			WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-			CW_USEDEFAULT,
-			0,
-			CW_USEDEFAULT,
-			0,
-			0,
-			0,
-			hInstance,
-			0
-		);
-		ShowWindow(hWnd, SW_SHOWDEFAULT);
-		UpdateWindow(hWnd);
-		HACCEL hAccel = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDR_ACCELERATOR1));
-		while (GetMessage(&msg, 0, 0, 0))
-		{
-			if (!TranslateAccelerator(hWnd, hAccel, &msg) && !IsDialogMessage(hWnd, &msg))
-			{
-				TranslateMessage(&msg);
-				DispatchMessage(&msg);
-			}
-		}
-	}
-	::AtlAxWinTerm();
-	CoUninitialize();
-	return (int)msg.wParam;
+    switch (msg)
+    {
+    case WM_CHAR:
+        if (wParam == VK_RETURN) {
+            SendMessage(GetParent(hWnd), WM_APP + 1, 0, 0);
+            return 0;
+        }
+        break;
+    }
+    return DefSubclassProc(hWnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static HWND hEdit;
+    static HBRUSH hBrushOther;
+    static LPWSTR text;
+    static ThreadData data;
+    static HANDLE hThread;
+    switch (msg) {
+    case WM_CREATE:
+        UpdateLineHeight(hWnd);
+        hBrushOther = CreateSolidBrush(RGB(244, 244, 244));
+        hEdit = CreateWindow(L"EDIT", 0, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, hWnd, 0, ((LPCREATESTRUCT)lParam)->hInstance, 0);
+        SetWindowSubclass(hEdit, EditSubclassProc, 0, 0);
+        return 0;
+
+    case WM_APP: {
+        WaitForSingleObject(hThread, INFINITE);
+        CloseHandle(hThread);
+        hThread = 0;
+        LPWSTR lpszMessage = (LPWSTR)lParam;
+        if (lpszMessage) {
+            AddMessage(hWnd, lpszMessage, false);
+            GlobalFree(lpszMessage);
+        }
+        EnableWindow(hEdit, TRUE);
+        SetFocus(hEdit);
+        return 0;
+    }
+
+    case WM_APP + 1: {
+        int len = GetWindowTextLength(hEdit);
+        if (len > 0) {
+            if (text) {
+                GlobalFree(text);
+                text = nullptr;
+            }
+            text = (LPWSTR)GlobalAlloc(0, (len + 1) * sizeof(WCHAR));
+            if (text) {
+                GetWindowText(hEdit, text, len + 1);
+                AddMessage(hWnd, text, true);
+                SetWindowText(hEdit, 0);
+                EnableWindow(hEdit, FALSE);
+                data.hWnd = hWnd;
+                data.lpszMessage = text;
+                DWORD dwParam;
+                hThread = CreateThread(0, 0, ThreadFunc, (LPVOID)&data, 0, &dwParam);
+            }
+        }
+        return 0;
+    }
+
+    case WM_CTLCOLOREDIT:
+        if ((HWND)lParam == hEdit) {
+            HDC hdc = (HDC)wParam;
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(0, 0, 0));
+            return (LRESULT)hBrushOther;
+        }
+        break;
+
+    case WM_SETFONT:
+        UpdateLineHeight(hWnd);
+        UpdateScrollBar(hWnd);
+        InvalidateRect(hWnd, NULL, TRUE);
+        break;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        OnPaint(hWnd, hdc);
+
+        {
+            RECT rect;
+            GetClientRect(hWnd, &rect);
+            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(250, 250, 250));
+            HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hBrushOther);
+            RoundRect(hdc, 32, rect.bottom - 64 - 32,
+                rect.right - 32, rect.bottom - 32, 32, 32);
+            SelectObject(hdc, hOldBrush);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hPen);
+        }
+
+        EndPaint(hWnd, &ps);
+    } return 0;
+
+    case WM_VSCROLL:
+        OnVScroll(hWnd, wParam);
+        return 0;
+
+    case WM_MOUSEWHEEL: {
+        int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int scroll = -(zDelta / WHEEL_DELTA) * 40; // 1ノッチ40pxスクロール
+        g_scrollPos += scroll;
+        if (g_scrollPos < 0) g_scrollPos = 0;
+        if (g_scrollPos > g_contentHeight) g_scrollPos = g_contentHeight;
+        UpdateScrollBar(hWnd);
+        InvalidateRect(hWnd, NULL, TRUE);
+        return 0;
+    }
+
+    case WM_SIZE:
+        UpdateScrollBar(hWnd);
+        MoveWindow(hEdit, 32 + 16, HIWORD(lParam) - 32 - 32 - 16, LOWORD(lParam) - 64 - 32, 32, TRUE);
+        return 0;
+
+    case WM_SETFOCUS:
+        SetFocus(hEdit);
+        return 0;
+
+    case WM_RBUTTONDOWN: {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        for (auto& msg : g_messages) {
+            if (PtInRect(&msg.rect, pt)) {
+                CopyToClipboard(hWnd, msg.text);
+                MessageBoxW(hWnd, L"コピーしました！", L"情報", MB_OK);
+                break;
+            }
+        }
+        return 0;
+    }
+
+    case WM_DESTROY:
+        if (text) {
+            GlobalFree(text);
+            text = nullptr;
+        }
+        DeleteObject(hBrushOther);
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    INITCOMMONCONTROLSEX icex = { sizeof(INITCOMMONCONTROLSEX), ICC_STANDARD_CLASSES };
+    InitCommonControlsEx(&icex);  // DefSubclassProc を使う前に必須
+    MSG msg;
+    WNDCLASS wc = {
+        CS_HREDRAW | CS_VREDRAW,
+        WndProc,0,0,hInstance,
+        0, LoadCursor(0,IDC_ARROW),
+        (HBRUSH)(COLOR_WINDOW + 1),0,L"aichat"
+    };
+    RegisterClass(&wc);
+    HWND hWnd = CreateWindow(
+        L"aichat", L"aichat",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VSCROLL,
+        CW_USEDEFAULT, 0, CW_USEDEFAULT, 0,
+        0, 0, hInstance, 0);
+    ShowWindow(hWnd, SW_SHOWDEFAULT);
+    UpdateWindow(hWnd);
+    while (GetMessage(&msg, 0, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return (int)msg.wParam;
 }
