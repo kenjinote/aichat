@@ -6,7 +6,7 @@
 
 API の呼び出し回数には制限があるため、制限を超えると動作しなくなることがあります。
 
-![image](https://user-images.githubusercontent.com/2605401/214343889-17f0e6d8-51d7-4c0d-83dc-269d00587fc0.png)
+<img width="621" height="595" alt="image" src="https://github.com/user-attachments/assets/27645085-157f-49b6-a6d3-6a3dd6e4b3b7" />
 
 ## ダウンロード
 
@@ -17,8 +17,6 @@ API の呼び出し回数には制限があるため、制限を超えると動�
 ## ライセンス
 
 MIT ライセンス（著作権および許諾表示を記載すれば、非営利、商用を問わず、使用、改変、複製、再頒布が可能です。）
-
-ロボットのアイコンは`nukumori-icon.com`より
 
 APIの利用規約は下記をご参照ください。
 https://beta.openai.com/docs/usage-policies
