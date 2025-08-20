@@ -35,4 +35,12 @@
       <Filter>ヘッダー ファイル</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="resource\index.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="resource\icon.ico">
+      <Filter>リソース ファイル</Filter>
+    </Image>
+  </ItemGroup>
 </Project>

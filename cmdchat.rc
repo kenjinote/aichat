@@ -47,14 +47,6 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 //
-// HTML
-//
-
-IDR_HTML1               HTML                    "resource\\index.html"
-
-
-/////////////////////////////////////////////////////////////////////////////
-//
 // Icon
 //
 
@@ -70,9 +62,11 @@ IDI_ICON1               ICON                    "resource\\icon.ico"
 
 IDR_ACCELERATOR1 ACCELERATORS
 BEGIN
-    "C",            ID_COPY,                VIRTKEY, CONTROL, NOINVERT
-    VK_TAB,         ID_TAB,                 VIRTKEY, NOINVERT
-    VK_RETURN,      ID_RUN,                 VIRTKEY, NOINVERT
+    VK_HOME,        ID_HOME,                VIRTKEY, CONTROL, NOINVERT
+    VK_END,         ID_END,                 VIRTKEY, CONTROL, NOINVERT
+    VK_PRIOR,       ID_PRIOR,               VIRTKEY, NOINVERT
+    VK_NEXT,        ID_NEXT,                VIRTKEY, NOINVERT
+    VK_RETURN,      ID_NEW,                 VIRTKEY, CONTROL, NOINVERT
 END
 
 #endif    // “ú–{Œê (“ú–{) resources

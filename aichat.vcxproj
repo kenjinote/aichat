@@ -168,6 +168,12 @@
     <ClInclude Include="json11.hpp" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="resource\index.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="resource\icon.ico" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
