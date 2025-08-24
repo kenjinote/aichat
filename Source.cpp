@@ -95,7 +95,7 @@ HRESULT InitD2D(HWND hWnd)
     }
     if (!g_pTextFormat) {
         hr = g_pDWriteFactory->CreateTextFormat(
-            L"Meiryo",                // フォント
+            L"Segoe UI",                // フォント
             nullptr,
             DWRITE_FONT_WEIGHT_REGULAR,
             DWRITE_FONT_STYLE_NORMAL,
@@ -453,7 +453,7 @@ void OnPaint(HWND hWnd)
             origin,
             pTextLayout,
             g_pBrushText,
-            D2D1_DRAW_TEXT_OPTIONS_CLIP
+            D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT
         );
         pTextLayout->Release();
         y += lineHeight;
